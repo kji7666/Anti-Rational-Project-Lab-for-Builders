@@ -1,0 +1,11 @@
+# Weird Lab local runtime data
+data/*.db
+data/*.db-shm
+data/*.db-wal
+logs/
+exports/ideas/
+prototypes/
+experiments/repo-probes/
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
