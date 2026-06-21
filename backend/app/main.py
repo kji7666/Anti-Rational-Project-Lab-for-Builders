@@ -87,6 +87,37 @@ app.add_middleware(
 )
 
 
+def _ensure_generated_idea_count(
+    *,
+    generated: list[dict],
+    text: str,
+    source_signal_ids: list[str],
+    requested_count: int,
+) -> list[dict]:
+    if len(generated) >= requested_count:
+        return generated[:requested_count]
+
+    fallback_items = generated_idea_payloads(
+        text=text,
+        source_signal_ids=source_signal_ids,
+        count=requested_count,
+    )
+    existing_names = {str(item.get("name") or "").strip() for item in generated}
+    completed = list(generated)
+
+    for item in fallback_items:
+        item_name = str(item.get("name") or "").strip()
+        if item_name and item_name in existing_names:
+            continue
+        completed.append(item)
+        if item_name:
+            existing_names.add(item_name)
+        if len(completed) >= requested_count:
+            break
+
+    return completed[:requested_count]
+
+
 @app.on_event("startup")
 def startup() -> None:
     init_db()
@@ -341,6 +372,16 @@ def generate_ideas(payload: IdeaGenerateRequest) -> dict:
             generated = llm_result["ideas"]
             provider_used = "local_gpt"
             pipeline_stages = llm_result.get("pipeline_stages", [])
+            if len(generated) < payload.count:
+                warnings.append(
+                    f"Local GPT 只產出 {len(generated)} 張卡，已用模板補足到 {payload.count} 張。"
+                )
+                generated = _ensure_generated_idea_count(
+                    generated=generated,
+                    text=combined_text,
+                    source_signal_ids=source_signal_ids,
+                    requested_count=payload.count,
+                )
         except LocalLLMPipelineError as exc:
             warnings.append(f"Local GPT 無法使用，已改用模板產生：{exc}")
             generated = generated_idea_payloads(

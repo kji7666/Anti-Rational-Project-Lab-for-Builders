@@ -28,28 +28,25 @@ class StageResult:
         return data
 
 
-SYSTEM_PROMPT = """你是 Weird Lab / 怪題研究所 的本地創意引擎。
+SYSTEM_PROMPT = """You are the local creative engine for Weird Lab / 怪題研究所.
 
-你的工作不是產生普通商業軟體點子，而是產生奇怪但可做、適合一週內做出 prototype 的 local-first 點子。
+Your job is to turn raw research material into weird-but-buildable local-first product ideas.
 
-強烈避免：
-- generic SaaS dashboard
-- AI assistant for X
-- platform for Y
-- 只有 workflow automation 沒有視覺鉤子
-- 普通 summarizer
-- generic productivity tool
-- 需要完整公司團隊才做得出的產品
+Avoid:
+- generic SaaS dashboards
+- generic AI assistants
+- generic workflow automation
+- bland summarizers
+- generic productivity tools
 
-強烈偏好：
+Prefer:
 - weird but buildable local tools
-- visual debugging
 - developer tools
 - repo autopsy
 - failure museum
 - graveyard / ritual / microscope / sandbox / weird console
-- 有記憶點的 first screen
-- 一週 MVP 可完成
+- strong first-screen imagination
+- small but vivid MVP shapes
 """
 
 
@@ -123,17 +120,15 @@ def _extract_balanced_json(text: str) -> str | None:
 
 
 def _repair_json_text(text: str) -> Any | None:
-    prompt = f"""請把下面內容修復成合法 JSON。
+    prompt = f"""Repair the following text into valid JSON only.
+Do not include Markdown fences or commentary.
 
-只輸出 JSON，不要解釋，不要加 Markdown。
-
-內容：
 {text}
 """
     try:
         repaired = chat_completion(
             messages=[
-                {"role": "system", "content": "你是 JSON 修復器。只輸出合法 JSON。"},
+                {"role": "system", "content": "You repair malformed JSON and reply with JSON only."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
@@ -156,18 +151,18 @@ def _summarize_output(output: Any) -> str:
         if "summary" in output and isinstance(output["summary"], str):
             return output["summary"][:220]
         if "cards" in output and isinstance(output["cards"], list):
-            return f"產出 {len(output['cards'])} 張怪題卡。"
+            return f"Produced {len(output['cards'])} idea cards."
         if "ideas" in output and isinstance(output["ideas"], list):
-            return f"整理出 {len(output['ideas'])} 個候選方向。"
+            return f"Produced {len(output['ideas'])} candidate ideas."
         keys = list(output.keys())[:5]
-        return "輸出欄位：" + ", ".join(keys)
+        return "Keys: " + ", ".join(keys)
     if isinstance(output, list):
-        return f"產出 {len(output)} 筆資料。"
+        return f"Produced {len(output)} items."
     return str(output)[:220]
 
 
 def _normalize_card(card: dict[str, Any], source_signal_ids: list[str]) -> dict[str, Any]:
-    name = str(card.get("title") or card.get("name") or "未命名怪題").strip()
+    name = str(card.get("title") or card.get("name") or "Untitled weird idea").strip()
     one_liner = str(card.get("one_liner") or "").strip()
     weird_angle = str(card.get("weird_angle") or "").strip()
     real_pain = str(card.get("real_pain") or "").strip()
@@ -189,7 +184,7 @@ def _normalize_card(card: dict[str, Any], source_signal_ids: list[str]) -> dict[
         "status": "new",
         "source_signal_ids": source_signal_ids,
         "scores": scores,
-        "generator_note": f"Local GPT multi-step pipeline：{source_summary or '已完成多階段怪題生成。'}",
+        "generator_note": f"Local GPT 3-stage pipeline. {source_summary or 'No source summary provided.'}",
         "source_summary": source_summary,
         "target_user": target_user,
         "anti_saas_notes": anti_saas_notes,
@@ -233,120 +228,62 @@ def run_local_llm_pipeline(*, text: str, source_signal_ids: list[str] | None = N
 
     stage1 = _chat_json(
         "extract_material_brief",
-        "素材解剖",
-        f"""請根據下列素材輸出 JSON 物件，欄位包含：
-- summary
-- tensions: string[]
-- strange_observations: string[]
-- developer_pains: string[]
-- broken_workflows: string[]
-- repeated_complaints: string[]
+        "Material Brief",
+        f"""Summarize the following material into JSON:
+{{
+  "summary": string,
+  "tensions": string[],
+  "strange_observations": string[],
+  "developer_pains": string[],
+  "broken_workflows": string[],
+  "repeated_complaints": string[]
+}}
 
-素材：
+Material:
 {text}
 """,
         temperature=0.2,
     )
 
     stage2 = _chat_json(
-        "diverge_weird_angles",
-        "怪角度發散",
-        f"""根據這份素材摘要輸出 JSON 物件，欄位：
-- ideas: [{{
-  "title": string,
-  "one_liner": string,
-  "weird_angle": string,
-  "source_summary": string
-}}]
+        "develop_ideas",
+        "Develop Ideas",
+        f"""Turn the material brief into Weird Lab idea skeletons and respond with JSON:
+{{
+  "ideas": [
+    {{
+      "title": string,
+      "one_liner": string,
+      "source_summary": string,
+      "weird_angle": string,
+      "target_user": string,
+      "real_pain": string,
+      "first_screen": string,
+      "mvp_shape": string,
+      "anti_saas_notes": string[],
+      "risks": string[]
+    }}
+  ]
+}}
 
-請產出 {count + 2} 個候選方向。
+Requirements:
+- Keep the ideas weird but buildable.
+- Avoid generic SaaS, dashboards, platforms, workflow automation, and generic AI assistants.
+- Each idea must include weird_angle, target_user, real_pain, first_screen, and mvp_shape.
+- anti_saas_notes should briefly explain why the idea does not collapse into generic SaaS.
+- Propose exactly {count} ideas when possible.
+- Each idea should feel distinct in angle, target user, or first-screen hook.
 
-素材摘要：
+Material brief:
 {json.dumps(stage1.output, ensure_ascii=False, indent=2)}
 """,
+        temperature=0.4,
     )
 
     stage3 = _chat_json(
-        "anti_saas_critique",
-        "反 SaaS 批判",
-        f"""請批判下面候選怪題，輸出 JSON 物件：
-- critiques: [{{
-  "title": string,
-  "boring_signals": string[],
-  "survive": boolean,
-  "keep_note": string
-}}]
-
-如果它像 dashboard / platform / workflow / generic AI assistant / productivity tool，就要毫不留情指出。
-
-候選：
-{json.dumps(stage2.output, ensure_ascii=False, indent=2)}
-""",
-        temperature=0.3,
-    )
-
-    stage4 = _chat_json(
-        "amplify_weirdness",
-        "怪感強化",
-        f"""請保留值得存活的候選，輸出 JSON 物件：
-- ideas: [{{
-  "title": string,
-  "one_liner": string,
-  "weird_angle": string,
-  "anti_saas_notes": string[]
-}}]
-
-請讓它更有 Weird Lab 氣質，但仍然一週內可做。
-
-批判結果：
-{json.dumps(stage3.output, ensure_ascii=False, indent=2)}
-""",
-    )
-
-    stage5 = _chat_json(
-        "reconstruct_real_pain",
-        "痛點重建",
-        f"""請把存活候選補成真實痛點，輸出 JSON 物件：
-- ideas: [{{
-  "title": string,
-  "target_user": string,
-  "real_pain": string,
-  "moment_of_use": string
-}}]
-
-素材摘要：
-{json.dumps(stage1.output, ensure_ascii=False, indent=2)}
-
-存活候選：
-{json.dumps(stage4.output, ensure_ascii=False, indent=2)}
-""",
-        temperature=0.4,
-    )
-
-    stage6 = _chat_json(
-        "shape_mvp",
-        "MVP 成形",
-        f"""請為每個存活候選設計一週 MVP，輸出 JSON 物件：
-- ideas: [{{
-  "title": string,
-  "first_screen": string,
-  "mvp_shape": string,
-  "risks": string[]
-}}]
-
-候選：
-{json.dumps(stage4.output, ensure_ascii=False, indent=2)}
-
-痛點：
-{json.dumps(stage5.output, ensure_ascii=False, indent=2)}
-""",
-        temperature=0.4,
-    )
-
-    stage7 = _chat_json(
         "emit_cards",
-        "輸出怪題卡",
-        f"""請輸出最終 JSON 物件，格式：
+        "Emit Cards",
+        f"""Convert the developed ideas into final card JSON:
 {{
   "cards": [
     {{
@@ -376,24 +313,18 @@ def run_local_llm_pipeline(*, text: str, source_signal_ids: list[str] | None = N
   ]
 }}
 
-只保留前 {count} 張卡。
+Return exactly {count} cards when possible.
 
-素材摘要：
+Material brief:
 {json.dumps(stage1.output, ensure_ascii=False, indent=2)}
 
-怪角度：
-{json.dumps(stage4.output, ensure_ascii=False, indent=2)}
-
-痛點：
-{json.dumps(stage5.output, ensure_ascii=False, indent=2)}
-
-MVP：
-{json.dumps(stage6.output, ensure_ascii=False, indent=2)}
+Developed ideas:
+{json.dumps(stage2.output, ensure_ascii=False, indent=2)}
 """,
         temperature=0.4,
     )
 
-    cards = stage7.output.get("cards") if isinstance(stage7.output, dict) else None
+    cards = stage3.output.get("cards") if isinstance(stage3.output, dict) else None
     if not isinstance(cards, list) or not cards:
         raise LocalLLMPipelineError("Local GPT pipeline returned no idea cards.")
 
@@ -401,7 +332,7 @@ MVP：
     if not ideas:
         raise LocalLLMPipelineError("Local GPT pipeline returned cards in an unusable shape.")
 
-    stages = [stage1, stage2, stage3, stage4, stage5, stage6, stage7]
+    stages = [stage1, stage2, stage3]
     return {
         "ideas": ideas,
         "pipeline_stages": [item.as_dict() for item in stages],
