@@ -4,18 +4,22 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import crud
-from .db import init_db
+from .db import DB_PATH, ROOT_DIR, init_db
 from .generator import generated_idea_payloads
+from .llm_client import check_local_llm, get_llm_settings
+from .llm_pipeline import LocalLLMPipelineError, run_local_llm_pipeline
 from .reviewer import commercial_smell_report, make_suggestions, review_idea, score_idea
 from .mvp import build_mvp_draft, export_task_package
-from .prototype import create_prototype_workspace_files, write_run_markdown
-from .repo_probe import probe_repo
+from .prototype import PROTOTYPE_ROOT, create_prototype_workspace_files, write_run_markdown
+from .repo_probe import REPO_EXPERIMENTS_DIR, probe_repo
+from .scheduler import get_scheduler_manager
 from .taste import build_taste_profile, create_feedback, recommendations, score_taste_fit
 from .collectors import collect_many, collector_infos
 from .evolution import build_family_suggestions, similar_ideas, revive_suggestions, build_merged_idea_payload
 from .schemas import (
     AntiRationalReviewResponse,
     CommercialSmellResponse,
+    DiagnosticsResponse,
     ExportRecord,
     SignalCollectRequest,
     SignalCollectResponse,
@@ -27,7 +31,10 @@ from .schemas import (
     IdeaGenerateRequest,
     IdeaGenerateResponse,
     IdeaUpdate,
+    LlmHealthResponse,
+    LlmSettingsResponse,
     MvpDraftResponse,
+    PipelineStageSummary,
     RenameSuggestionsResponse,
     Review,
     ReviewCreate,
@@ -52,6 +59,12 @@ from .schemas import (
     RepoExperimentCreate,
     RepoExperiment,
     RepoExperimentCreateResponse,
+    ScheduledJob,
+    ScheduledJobRun,
+    ScheduledJobUpdate,
+    SchedulerJobsResponse,
+    SchedulerRunsResponse,
+    SchedulerStatusResponse,
     TasteFeedbackCreate,
     TasteFeedbackResponse,
     TasteFitResponse,
@@ -60,6 +73,10 @@ from .schemas import (
 )
 
 app = FastAPI(title="怪題研究所 API", version="0.0.1")
+scheduler_manager = get_scheduler_manager()
+
+EXPORTS_DIR = ROOT_DIR / "exports" / "ideas"
+LOGS_DIR = ROOT_DIR / "logs"
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,11 +90,116 @@ app.add_middleware(
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    scheduler_manager.start()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    scheduler_manager.stop()
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/llm/settings", response_model=LlmSettingsResponse)
+def llm_settings() -> dict[str, str | float | bool]:
+    settings = get_llm_settings()
+    return {
+        "base_url": settings.base_url,
+        "model": settings.model,
+        "timeout_seconds": settings.timeout_seconds,
+        "api_key_configured": settings.api_key_configured,
+    }
+
+
+@app.get("/llm/health", response_model=LlmHealthResponse)
+def llm_health() -> dict:
+    return check_local_llm()
+
+
+@app.get("/settings/diagnostics", response_model=DiagnosticsResponse)
+def settings_diagnostics() -> dict:
+    llm_settings = get_llm_settings()
+    llm_health_status = check_local_llm()
+    return {
+        "app": {
+            "name": "Weird Lab / 怪題研究所",
+            "phase": "Phase 16",
+            "mode": "local-first",
+        },
+        "backend": {
+            "status": "ok",
+            "base_url_hint": "http://127.0.0.1:8790",
+            "python_target": "3.13",
+        },
+        "local_gpt": {
+            "base_url": llm_settings.base_url,
+            "model": llm_settings.model,
+            "timeout_seconds": llm_settings.timeout_seconds,
+            "api_key_configured": llm_settings.api_key_configured,
+            "api_key_visible": False,
+            "health": llm_health_status.get("status", "unknown"),
+            "detail": llm_health_status.get("detail", ""),
+            "fallback": "模板產生",
+        },
+        "paths": {
+            "data": {"path": "data/", "purpose": "SQLite 資料庫與本地核心資料"},
+            "exports": {
+                "path": str(EXPORTS_DIR.relative_to(ROOT_DIR)).replace("\\", "/") + "/",
+                "purpose": "題目匯出與 Prototype 任務包",
+            },
+            "prototypes": {
+                "path": str(PROTOTYPE_ROOT.relative_to(ROOT_DIR)).replace("\\", "/") + "/",
+                "purpose": "Prototype workspace 與 run 紀錄",
+            },
+            "repo_experiments": {
+                "path": str(REPO_EXPERIMENTS_DIR.relative_to(ROOT_DIR)).replace("\\", "/") + "/",
+                "purpose": "Repo Probe 報告與檢查輸出",
+            },
+            "logs": {
+                "path": str(LOGS_DIR.relative_to(ROOT_DIR)).replace("\\", "/") + "/",
+                "purpose": "執行紀錄與除錯輸出",
+            },
+            "backup_database": {
+                "path": str(DB_PATH.relative_to(ROOT_DIR)).replace("\\", "/"),
+                "purpose": "手動備份時優先保存的 SQLite 資料庫",
+            },
+        },
+        "repo_probe": {
+            "default_mode": "inspect_only",
+            "local_execute_windows": "blocked",
+            "safety_note": "Repo Probe 預設只做 inspect。Windows 上不重新開啟 local_execute，也不提供危險執行開關。",
+        },
+        "codex_opencode": {
+            "mode": "manual_handoff",
+            "automation": "not_enabled",
+            "notes": "目前支援用 prompt、workspace 與 run ledger 手動交接給 Codex 或 OpenCode，尚未實作自動 CLI 執行。",
+        },
+        "scheduler": {
+            "status": scheduler_manager.get_status().get("status", "unknown"),
+            "mode": "in_app_local_loop",
+            "note": "排程只會在 backend 運作時執行，不會自動排入 Repo Probe、Codex 或 OpenCode 執行。",
+        },
+        "backup": {
+            "sqlite_db": str(DB_PATH.relative_to(ROOT_DIR)).replace("\\", "/"),
+            "recommended_items": [
+                "data/app.db",
+                "exports/ideas/",
+                "prototypes/",
+                "experiments/repo-probes/",
+                "logs/",
+            ],
+            "note": "這一階段提供手動備份指引，不建立雲端同步或自動排程備份。",
+        },
+        "environment_variables": [
+            "WEIRDLAB_LLM_BASE_URL",
+            "WEIRDLAB_LLM_MODEL",
+            "WEIRDLAB_LLM_API_KEY",
+            "WEIRDLAB_LLM_TIMEOUT_SECONDS",
+        ],
+    }
 
 
 @app.get("/collectors", response_model=list[SourceCollectorInfo])
@@ -87,19 +209,73 @@ def list_collectors() -> list[dict]:
 
 @app.post("/signals/collect", response_model=SignalCollectResponse)
 def collect_signals(payload: SignalCollectRequest) -> dict:
-    collected, errors = collect_many(
+    existing_signals = crud.list_signals()
+    result = collect_many(
         sources=payload.sources,
         query=payload.query,
         limit_per_source=payload.limit_per_source,
+        feed_urls=payload.feed_urls,
+        custom_urls=payload.custom_urls,
+        existing_signals=existing_signals,
     )
+    collected = result.get("signals", [])
+    duplicate_signals = result.get("duplicate_signals", [])
+    errors = result.get("errors", [])
+    warnings = result.get("warnings", [])
+    stats = result.get("stats", {})
 
     if not payload.save:
-        return {"signals": collected, "saved": False, "errors": errors}
+        return {
+            "signals": collected,
+            "saved": False,
+            "errors": errors,
+            "warnings": warnings,
+            "duplicate_signals": duplicate_signals,
+            "stats": stats,
+        }
 
     saved = []
     for item in collected:
         saved.append(crud.create_signal(SignalCreate(**item)))
-    return {"signals": saved, "saved": True, "errors": errors}
+    return {
+        "signals": saved,
+        "saved": True,
+        "errors": errors,
+        "warnings": warnings,
+        "duplicate_signals": duplicate_signals,
+        "stats": stats,
+    }
+
+
+@app.get("/scheduler/status", response_model=SchedulerStatusResponse)
+def get_scheduler_status() -> dict:
+    return scheduler_manager.get_status()
+
+
+@app.get("/scheduler/jobs", response_model=SchedulerJobsResponse)
+def get_scheduler_jobs() -> dict:
+    return {"jobs": scheduler_manager.list_jobs()}
+
+
+@app.patch("/scheduler/jobs/{job_id}", response_model=ScheduledJob)
+def patch_scheduler_job(job_id: str, payload: ScheduledJobUpdate) -> dict:
+    try:
+        return scheduler_manager.update_job(job_id, payload.model_dump(exclude_unset=True))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+
+@app.post("/scheduler/jobs/{job_id}/run")
+def run_scheduler_job(job_id: str) -> dict:
+    try:
+        return scheduler_manager.run_job_now(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Scheduled job not found")
+
+
+@app.get("/scheduler/runs", response_model=SchedulerRunsResponse)
+def get_scheduler_runs(limit: int = Query(default=30, ge=1, le=100)) -> dict:
+    return {"runs": scheduler_manager.list_runs(limit=limit)}
 
 
 @app.post("/signals", response_model=Signal)
@@ -151,20 +327,70 @@ def generate_ideas(payload: IdeaGenerateRequest) -> dict:
     if not combined_text:
         raise HTTPException(status_code=400, detail="raw_text or signal_ids is required")
 
-    generated = generated_idea_payloads(
-        text=combined_text,
-        source_signal_ids=source_signal_ids,
-        count=payload.count,
-    )
+    warnings: list[str] = []
+    pipeline_stages: list[dict] = []
+    provider_used = "heuristic"
+
+    if payload.mode == "llm" or payload.provider == "local_gpt":
+        try:
+            llm_result = run_local_llm_pipeline(
+                text=combined_text,
+                source_signal_ids=source_signal_ids,
+                count=payload.count,
+            )
+            generated = llm_result["ideas"]
+            provider_used = "local_gpt"
+            pipeline_stages = llm_result.get("pipeline_stages", [])
+        except LocalLLMPipelineError as exc:
+            warnings.append(f"Local GPT 無法使用，已改用模板產生：{exc}")
+            generated = generated_idea_payloads(
+                text=combined_text,
+                source_signal_ids=source_signal_ids,
+                count=payload.count,
+            )
+            provider_used = "template_fallback"
+    else:
+        generated = generated_idea_payloads(
+            text=combined_text,
+            source_signal_ids=source_signal_ids,
+            count=payload.count,
+        )
 
     if not payload.save:
-        return {"ideas": generated, "saved": False, "source_signal_ids": source_signal_ids}
+        return {
+            "ideas": generated,
+            "saved": False,
+            "source_signal_ids": source_signal_ids,
+            "provider_used": provider_used,
+            "warnings": warnings,
+            "pipeline_stages": pipeline_stages if payload.debug else [],
+        }
 
     saved = []
     for item in generated:
-        item_without_note = {key: value for key, value in item.items() if key != "generator_note"}
-        saved.append(crud.create_idea(IdeaCreate(**item_without_note)))
-    return {"ideas": saved, "saved": True, "source_signal_ids": source_signal_ids}
+        save_payload = {
+            "name": item.get("name", ""),
+            "one_liner": item.get("one_liner", ""),
+            "weird_angle": item.get("weird_angle", ""),
+            "real_pain": item.get("real_pain", ""),
+            "first_screen": item.get("first_screen", ""),
+            "mvp": item.get("mvp", ""),
+            "status": item.get("status", "new"),
+            "source_signal_ids": item.get("source_signal_ids") or [],
+            "scores": item.get("scores") or {},
+            "status_note": item.get("status_note", ""),
+            "rejection_reason": item.get("rejection_reason", ""),
+            "revival_condition": item.get("revival_condition", ""),
+        }
+        saved.append(crud.create_idea(IdeaCreate(**save_payload)))
+    return {
+        "ideas": saved,
+        "saved": True,
+        "source_signal_ids": source_signal_ids,
+        "provider_used": provider_used,
+        "warnings": warnings,
+        "pipeline_stages": pipeline_stages if payload.debug else [],
+    }
 
 
 @app.get("/ideas", response_model=list[Idea])

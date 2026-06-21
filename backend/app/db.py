@@ -24,6 +24,11 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    for column, definition in columns.items():
+        ensure_column(conn, table, column, definition)
+
+
 def init_db() -> None:
     schema_statements: Iterable[str] = [
         """
@@ -37,6 +42,11 @@ def init_db() -> None:
             tags TEXT NOT NULL DEFAULT '[]',
             weirdness INTEGER NOT NULL DEFAULT 5,
             pain_signal INTEGER NOT NULL DEFAULT 5,
+            source_category TEXT NOT NULL DEFAULT '',
+            quality_score INTEGER,
+            quality_reason TEXT NOT NULL DEFAULT '',
+            fingerprint TEXT NOT NULL DEFAULT '',
+            collected_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -181,6 +191,42 @@ def init_db() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS scheduled_jobs (
+            id TEXT PRIMARY KEY,
+            job_key TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 0,
+            schedule_type TEXT NOT NULL DEFAULT 'daily',
+            interval_minutes INTEGER,
+            time_of_day TEXT NOT NULL DEFAULT '',
+            day_of_week INTEGER,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            last_run_at TEXT NOT NULL DEFAULT '',
+            next_run_at TEXT NOT NULL DEFAULT '',
+            last_status TEXT NOT NULL DEFAULT 'idle',
+            last_message TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            job_key TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL DEFAULT '',
+            duration_seconds REAL NOT NULL DEFAULT 0,
+            summary TEXT NOT NULL DEFAULT '',
+            warning TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '',
+            result_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (job_id) REFERENCES scheduled_jobs(id) ON DELETE CASCADE
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS idea_events (
             id TEXT PRIMARY KEY,
             idea_id TEXT NOT NULL,
@@ -198,8 +244,122 @@ def init_db() -> None:
         for statement in schema_statements:
             conn.execute(statement)
 
-        # Phase 2 migration for users upgrading from Phase 1 without deleting data/app.db.
-        ensure_column(conn, "ideas", "status_note", "TEXT NOT NULL DEFAULT ''")
-        ensure_column(conn, "ideas", "rejection_reason", "TEXT NOT NULL DEFAULT ''")
-        ensure_column(conn, "ideas", "revival_condition", "TEXT NOT NULL DEFAULT ''")
+        # Keep additive migrations explicit so older phase databases can still boot.
+        ensure_columns(
+            conn,
+            "signals",
+            {
+                "source_category": "TEXT NOT NULL DEFAULT ''",
+                "quality_score": "INTEGER",
+                "quality_reason": "TEXT NOT NULL DEFAULT ''",
+                "fingerprint": "TEXT NOT NULL DEFAULT ''",
+                "collected_at": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        ensure_columns(
+            conn,
+            "ideas",
+            {
+                "status_note": "TEXT NOT NULL DEFAULT ''",
+                "rejection_reason": "TEXT NOT NULL DEFAULT ''",
+                "revival_condition": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        ensure_columns(
+            conn,
+            "prototype_workspaces",
+            {
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "worker": "TEXT NOT NULL DEFAULT 'manual'",
+                "status": "TEXT NOT NULL DEFAULT 'created'",
+                "notes": "TEXT NOT NULL DEFAULT ''",
+                "updated_at": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        ensure_columns(
+            conn,
+            "prototype_runs",
+            {
+                "workspace_id": "TEXT",
+                "worker": "TEXT NOT NULL DEFAULT 'manual'",
+                "status": "TEXT NOT NULL DEFAULT 'planned'",
+                "goal": "TEXT NOT NULL DEFAULT ''",
+                "summary": "TEXT NOT NULL DEFAULT ''",
+                "changed_files": "TEXT NOT NULL DEFAULT '[]'",
+                "test_commands": "TEXT NOT NULL DEFAULT '[]'",
+                "result": "TEXT NOT NULL DEFAULT ''",
+                "next_step": "TEXT NOT NULL DEFAULT ''",
+                "report_path": "TEXT NOT NULL DEFAULT ''",
+                "updated_at": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        ensure_columns(
+            conn,
+            "repo_experiments",
+            {
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "run_mode": "TEXT NOT NULL DEFAULT 'inspect_only'",
+                "status": "TEXT NOT NULL DEFAULT 'planned'",
+                "summary": "TEXT NOT NULL DEFAULT ''",
+                "detected_stack": "TEXT NOT NULL DEFAULT '[]'",
+                "evidence": "TEXT NOT NULL DEFAULT '[]'",
+                "setup_commands": "TEXT NOT NULL DEFAULT '[]'",
+                "build_commands": "TEXT NOT NULL DEFAULT '[]'",
+                "test_commands": "TEXT NOT NULL DEFAULT '[]'",
+                "start_commands": "TEXT NOT NULL DEFAULT '[]'",
+                "risks": "TEXT NOT NULL DEFAULT '[]'",
+                "report_path": "TEXT NOT NULL DEFAULT ''",
+                "workspace_dir": "TEXT NOT NULL DEFAULT ''",
+                "logs": "TEXT NOT NULL DEFAULT '[]'",
+                "notes": "TEXT NOT NULL DEFAULT ''",
+                "updated_at": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        ensure_columns(
+            conn,
+            "scheduled_jobs",
+            {
+                "description": "TEXT NOT NULL DEFAULT ''",
+                "enabled": "INTEGER NOT NULL DEFAULT 0",
+                "schedule_type": "TEXT NOT NULL DEFAULT 'daily'",
+                "interval_minutes": "INTEGER",
+                "time_of_day": "TEXT NOT NULL DEFAULT ''",
+                "day_of_week": "INTEGER",
+                "config_json": "TEXT NOT NULL DEFAULT '{}'",
+                "last_run_at": "TEXT NOT NULL DEFAULT ''",
+                "next_run_at": "TEXT NOT NULL DEFAULT ''",
+                "last_status": "TEXT NOT NULL DEFAULT 'idle'",
+                "last_message": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        ensure_columns(
+            conn,
+            "scheduled_job_runs",
+            {
+                "finished_at": "TEXT NOT NULL DEFAULT ''",
+                "duration_seconds": "REAL NOT NULL DEFAULT 0",
+                "summary": "TEXT NOT NULL DEFAULT ''",
+                "warning": "TEXT NOT NULL DEFAULT ''",
+                "error": "TEXT NOT NULL DEFAULT ''",
+                "result_json": "TEXT NOT NULL DEFAULT '{}'",
+            },
+        )
+        ensure_columns(
+            conn,
+            "idea_events",
+            {
+                "title": "TEXT NOT NULL DEFAULT ''",
+                "note": "TEXT NOT NULL DEFAULT ''",
+                "related_idea_ids": "TEXT NOT NULL DEFAULT '[]'",
+                "metadata": "TEXT NOT NULL DEFAULT '{}'",
+            },
+        )
+        ensure_columns(
+            conn,
+            "taste_feedback",
+            {
+                "weight": "INTEGER NOT NULL DEFAULT 0",
+                "note": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
         conn.commit()

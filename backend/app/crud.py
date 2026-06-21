@@ -31,6 +31,7 @@ def decode(value: str, fallback: Any) -> Any:
 def signal_from_row(row: Any) -> dict[str, Any]:
     item = dict(row)
     item["tags"] = decode(item.get("tags", "[]"), [])
+    item["quality_score"] = item.get("quality_score")
     return item
 
 
@@ -65,8 +66,9 @@ def create_signal(payload: SignalCreate) -> dict[str, Any]:
             """
             INSERT INTO signals (
                 id, title, source_type, source_url, summary, raw_text,
-                tags, weirdness, pain_signal, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                tags, weirdness, pain_signal, source_category, quality_score,
+                quality_reason, fingerprint, collected_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item_id,
@@ -78,6 +80,11 @@ def create_signal(payload: SignalCreate) -> dict[str, Any]:
                 encode(payload.tags),
                 payload.weirdness,
                 payload.pain_signal,
+                payload.source_category,
+                payload.quality_score,
+                payload.quality_reason,
+                payload.fingerprint,
+                payload.collected_at,
                 timestamp,
                 timestamp,
             ),
@@ -603,3 +610,183 @@ def get_user_preference(key: str, fallback: Any = None) -> Any:
     if row is None:
         return fallback
     return decode(row["value"], fallback)
+
+
+def scheduled_job_from_row(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    item["enabled"] = bool(item.get("enabled"))
+    item["config_json"] = decode(item.get("config_json", "{}"), {})
+    return item
+
+
+def scheduled_job_run_from_row(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    item["result_json"] = decode(item.get("result_json", "{}"), {})
+    return item
+
+
+def list_scheduled_jobs() -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM scheduled_jobs ORDER BY name ASC").fetchall()
+    return [scheduled_job_from_row(row) for row in rows]
+
+
+def get_scheduled_job(job_id: str) -> dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM scheduled_jobs WHERE id = ?", (job_id,)).fetchone()
+    if row is None:
+        raise KeyError(job_id)
+    return scheduled_job_from_row(row)
+
+
+def get_scheduled_job_by_key(job_key: str) -> dict[str, Any] | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM scheduled_jobs WHERE job_key = ?", (job_key,)).fetchone()
+    return scheduled_job_from_row(row) if row is not None else None
+
+
+def upsert_scheduled_job(data: dict[str, Any]) -> dict[str, Any]:
+    current = get_scheduled_job_by_key(data["job_key"])
+    timestamp = now_iso()
+    if current is None:
+        job_id = new_id("job")
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO scheduled_jobs (
+                    id, job_key, name, description, enabled, schedule_type, interval_minutes,
+                    time_of_day, day_of_week, config_json, last_run_at, next_run_at,
+                    last_status, last_message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    data["job_key"],
+                    data.get("name", ""),
+                    data.get("description", ""),
+                    int(bool(data.get("enabled", False))),
+                    data.get("schedule_type", "daily"),
+                    data.get("interval_minutes"),
+                    data.get("time_of_day", ""),
+                    data.get("day_of_week"),
+                    encode(data.get("config_json", {})),
+                    data.get("last_run_at", ""),
+                    data.get("next_run_at", ""),
+                    data.get("last_status", "idle"),
+                    data.get("last_message", ""),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+        return get_scheduled_job(job_id)
+
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE scheduled_jobs
+            SET name = ?, description = ?, enabled = ?, schedule_type = ?, interval_minutes = ?,
+                time_of_day = ?, day_of_week = ?, config_json = ?, last_run_at = ?, next_run_at = ?,
+                last_status = ?, last_message = ?, updated_at = ?
+            WHERE job_key = ?
+            """,
+            (
+                data.get("name", current["name"]),
+                data.get("description", current.get("description", "")),
+                int(bool(data.get("enabled", current.get("enabled", False)))),
+                data.get("schedule_type", current.get("schedule_type", "daily")),
+                data.get("interval_minutes", current.get("interval_minutes")),
+                data.get("time_of_day", current.get("time_of_day", "")),
+                data.get("day_of_week", current.get("day_of_week")),
+                encode(data.get("config_json", current.get("config_json", {}))),
+                data.get("last_run_at", current.get("last_run_at", "")),
+                data.get("next_run_at", current.get("next_run_at", "")),
+                data.get("last_status", current.get("last_status", "idle")),
+                data.get("last_message", current.get("last_message", "")),
+                timestamp,
+                data["job_key"],
+            ),
+        )
+        conn.commit()
+    refreshed = get_scheduled_job_by_key(data["job_key"])
+    if refreshed is None:
+        raise KeyError(data["job_key"])
+    return refreshed
+
+
+def update_scheduled_job(job_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    current = get_scheduled_job(job_id)
+    if not updates:
+        return current
+
+    columns: list[str] = []
+    values: list[Any] = []
+    for key, value in updates.items():
+        columns.append(f"{key} = ?")
+        if key == "enabled":
+            values.append(int(bool(value)))
+        elif key == "config_json":
+            values.append(encode(value))
+        else:
+            values.append(value)
+    columns.append("updated_at = ?")
+    values.append(now_iso())
+    values.append(job_id)
+
+    with get_connection() as conn:
+        conn.execute(f"UPDATE scheduled_jobs SET {', '.join(columns)} WHERE id = ?", values)
+        conn.commit()
+    return get_scheduled_job(job_id)
+
+
+def create_scheduled_job_run(job_id: str, job_key: str, status: str = "running") -> dict[str, Any]:
+    run_id = new_id("jobrun")
+    started_at = now_iso()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO scheduled_job_runs (
+                id, job_id, job_key, status, started_at, finished_at, duration_seconds,
+                summary, warning, error, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, job_id, job_key, status, started_at, "", 0, "", "", "", encode({})),
+        )
+        conn.commit()
+    return get_scheduled_job_run(run_id)
+
+
+def get_scheduled_job_run(run_id: str) -> dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM scheduled_job_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise KeyError(run_id)
+    return scheduled_job_run_from_row(row)
+
+
+def update_scheduled_job_run(run_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    current = get_scheduled_job_run(run_id)
+    if not updates:
+        return current
+    columns: list[str] = []
+    values: list[Any] = []
+    for key, value in updates.items():
+        columns.append(f"{key} = ?")
+        if key == "result_json":
+            values.append(encode(value))
+        else:
+            values.append(value)
+    values.append(run_id)
+    with get_connection() as conn:
+        conn.execute(f"UPDATE scheduled_job_runs SET {', '.join(columns)} WHERE id = ?", values)
+        conn.commit()
+    return get_scheduled_job_run(run_id)
+
+
+def list_scheduled_job_runs(limit: int = 50) -> list[dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scheduled_job_runs ORDER BY started_at DESC LIMIT ?",
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+    return [scheduled_job_run_from_row(row) for row in rows]

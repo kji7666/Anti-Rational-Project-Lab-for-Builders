@@ -17,24 +17,56 @@ BORING_WORDS = {
 }
 
 STOPWORDS = {
-    "the", "and", "for", "with", "that", "this", "from", "into", "https", "http", "github",
-    "com", "www", "tool", "tools", "agent", "agents", "ai", "llm", "open", "source",
-    "一個", "可以", "工具", "產品", "自動", "系統", "使用", "如果", "因為", "但是", "這個", "那個",
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "https",
+    "http",
+    "github",
+    "com",
+    "www",
+    "tool",
+    "tools",
+    "agent",
+    "agents",
+    "ai",
+    "llm",
+    "open",
+    "source",
+    "我們",
+    "你們",
+    "他們",
+    "以及",
+    "如果",
+    "這個",
+    "那個",
+    "可以",
+    "需要",
+    "使用者",
+    "產品",
+    "功能",
+    "題目",
+    "素材",
 }
 
 TEMPLATES = [
     {
-        "name": "README 測謊機",
-        "one_liner": "把 README 當嫌疑犯，照它說的步驟執行，找出哪一步開始說謊。",
-        "weird_angle": "不是閱讀文件，而是審問文件；README 說的每一句都要進容器接受測謊。",
-        "first_screen": "輸入 repo URL 後，畫面像偵訊筆錄一樣列出 README 步驟：供詞、實測結果、破綻、真正可用指令。",
-        "mvp": "輸入 GitHub repo URL，抓 README 中的安裝/啟動/測試指令，在乾淨容器裡依序執行，輸出成功步驟、失敗步驟與真正可用 recipe。",
+        "name": "README 驗屍官",
+        "one_liner": "專門把 README 寫得很美但實際跑不起來的 repo 挖出來公開驗屍。",
+        "weird_angle": "不是做 repo 搜尋，而是做 README 誤導現場的屍檢檔案庫。",
+        "first_screen": "輸入 repo URL 後，畫面先列出 README 承諾、實際偵測到的啟動條件、第一個失敗點與死因分類。",
+        "mvp": "輸入 GitHub repo URL，解析 README、setup/build/test 訊號，產生一份可分享的屍檢報告與重跑 recipe。",
     },
     {
-        "name": "Repo 屍檢室",
-        "one_liner": "把跑不起來的開源 repo 拿來解剖，產出死因報告。",
-        "weird_angle": "每個失敗 repo 都不是單純失敗，而是一具需要屍檢的遺體。",
-        "first_screen": "左邊是 repo 基本資料，右邊是死因分類：環境腐爛、依賴中毒、API key 失血、README 誤導。",
+        "name": "Repo 急診室",
+        "one_liner": "把剛抓下來的陌生 repo 丟進急診流程，判斷它是小感冒還是重症。",
+        "weird_angle": "repo 不是文件夾，是送進急診的病人；setup/build/test 是生命徵象。",
+        "first_screen": "每個 repo 先顯示分診結果：能不能跑、卡在哪裡、需要哪些依賴、是否缺 API key、README 是否可信。",
         "mvp": "在容器中 setup/build/test repo，失敗時分類死因並產生 markdown 屍檢報告。第一版只支援 Node/Python。",
     },
     {
@@ -91,7 +123,7 @@ TEMPLATES = [
         "one_liner": "把幾個無關素材丟進去，煉出怪但可做的 side project 題目。",
         "weird_angle": "靈感不是整理出來的，是把不相干材料加熱後變異出來的。",
         "first_screen": "左邊是素材罐，右邊是煉成結果：怪題、真痛點、MVP、失敗風險。",
-        "mvp": "貼入 5～20 條素材，產生 10 張怪題卡，支援收藏/淘汰/深挖。",
+        "mvp": "貼入 5 到 20 條素材，產生 10 張怪題卡，支援收藏、淘汰、深挖。",
     },
 ]
 
@@ -116,12 +148,24 @@ def detect_theme(text: str) -> str:
 def pain_from_text(text: str, theme: str, keywords: list[str]) -> str:
     key_text = "、".join(keywords[:4]) or "素材"
     if theme == "repo":
-        return f"很多開源專案看起來值得研究，但第一步就卡在 setup/build/test；使用者真正痛的是不知道 {key_text} 這類專案到底能不能在乾淨環境跑起來。"
+        return (
+            f"很多開源專案看起來值得研究，但第一步就卡在 setup/build/test；"
+            f"使用者真正痛的是不知道 {key_text} 這類專案到底能不能在乾淨環境跑起來。"
+        )
     if theme == "agent":
-        return f"AI agent 很會執行，但失敗後常缺少可追責紀錄；使用者真正痛的是不知道 {key_text} 相關流程哪一步開始偏掉。"
+        return (
+            f"AI agent 很會執行，但失敗後常缺少可追責紀錄；"
+            f"使用者真正痛的是不知道 {key_text} 相關流程哪一步開始偏掉。"
+        )
     if theme == "visual":
-        return f"視覺產品不只要功能可跑，還要畫面、風格和互動合理；使用者真正痛的是 {key_text} 的結果很難被自動驗收。"
-    return f"素材裡反覆出現 {key_text}，代表有一個尚未被好好命名的小痛點；需要把它從合理但無聊的產品語言裡挖出來。"
+        return (
+            f"視覺產品不只要功能可跑，還要畫面、風格和互動合理；"
+            f"使用者真正痛的是 {key_text} 的結果很難被自動驗收。"
+        )
+    return (
+        f"素材裡反覆出現 {key_text}，代表有一個尚未被好好命名的小痛點；"
+        "需要把它從合理但無聊的產品語言裡挖出來。"
+    )
 
 
 def score_template(index: int, theme: str, text: str) -> dict[str, int]:

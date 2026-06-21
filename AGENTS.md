@@ -158,3 +158,16 @@ At the end of each task, report:
 3. Validation commands run and results
 4. Known limitations
 5. Suggested next step
+
+# model api
+This project should use the local OpenAI-compatible API when possible.
+
+Local model endpoint:
+- Base URL: http://127.0.0.1:8788/v1
+- Model: chatgpt-web-local
+- Provider name in Codex config: weirdlab_local_gpt
+
+Important:
+- Do not assume the official OpenAI API is the intended model endpoint for this project.
+- Provider configuration must be placed in the user-level Codex config, usually ~/.codex/config.toml, not only in project-local .codex/config.toml.
+- If the local API is not running, report that clearly and do not silently switch providers unless the user explicitly asks.

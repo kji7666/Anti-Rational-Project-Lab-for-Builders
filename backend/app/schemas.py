@@ -27,6 +27,11 @@ class SignalCreate(BaseModel):
     tags: list[str] = Field(default_factory=list)
     weirdness: int = Field(default=5, ge=1, le=10)
     pain_signal: int = Field(default=5, ge=1, le=10)
+    source_category: str = ""
+    quality_score: int | None = Field(default=None, ge=0, le=100)
+    quality_reason: str = ""
+    fingerprint: str = ""
+    collected_at: str = ""
 
 
 class Signal(SignalCreate):
@@ -76,16 +81,33 @@ class IdeaGenerateRequest(BaseModel):
     signal_ids: list[str] = Field(default_factory=list)
     count: int = Field(default=10, ge=1, le=10)
     save: bool = True
+    mode: Literal["heuristic", "llm"] = "heuristic"
+    provider: Literal["local_gpt"] | None = None
+    debug: bool = False
 
 
 class GeneratedIdea(IdeaCreate):
     generator_note: str = ""
+    source_summary: str = ""
+    target_user: str = ""
+    anti_saas_notes: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+
+
+class PipelineStageSummary(BaseModel):
+    stage: str
+    title: str
+    summary: str
+    warning: str | None = None
 
 
 class IdeaGenerateResponse(BaseModel):
     ideas: list[Idea | GeneratedIdea]
     saved: bool
     source_signal_ids: list[str] = Field(default_factory=list)
+    provider_used: str = "heuristic"
+    warnings: list[str] = Field(default_factory=list)
+    pipeline_stages: list[PipelineStageSummary] = Field(default_factory=list)
 
 
 
@@ -176,6 +198,13 @@ class SourceCollectorInfo(BaseModel):
     key: str
     label: str
     description: str = ""
+    category: str = ""
+    enabled: bool = True
+    requires_network: bool = True
+    requires_api_key: bool = False
+    risk_level: Literal["low", "medium", "high"] = "low"
+    default_query_hint: str = ""
+    notes: str = ""
 
 
 class SignalCollectRequest(BaseModel):
@@ -183,12 +212,24 @@ class SignalCollectRequest(BaseModel):
     sources: list[str] = Field(default_factory=lambda: ["github", "hacker_news", "arxiv"])
     limit_per_source: int = Field(default=5, ge=1, le=10)
     save: bool = True
+    feed_urls: list[str] = Field(default_factory=list)
+    custom_urls: list[str] = Field(default_factory=list)
+
+
+class SignalCollectStats(BaseModel):
+    collected_count: int = 0
+    new_count: int = 0
+    duplicate_count: int = 0
+    failed_count: int = 0
 
 
 class SignalCollectResponse(BaseModel):
     signals: list[Signal | SignalCreate]
     saved: bool
     errors: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    duplicate_signals: list[Signal | SignalCreate] = Field(default_factory=list)
+    stats: SignalCollectStats = Field(default_factory=SignalCollectStats)
 
 
 class IdeaEventCreate(BaseModel):
@@ -425,3 +466,151 @@ class TasteFeedbackResponse(BaseModel):
     feedback: TasteFeedback
     fit: TasteFitResponse | None = None
     profile: TasteProfileResponse | None = None
+
+
+class LlmSettingsResponse(BaseModel):
+    base_url: str
+    model: str
+    timeout_seconds: float
+    api_key_configured: bool
+
+
+class LlmHealthResponse(BaseModel):
+    base_url: str
+    model: str
+    timeout_seconds: float
+    api_key_configured: bool
+    available: bool
+    status: str
+    detail: str = ""
+
+
+class DiagnosticsAppInfo(BaseModel):
+    name: str
+    phase: str
+    mode: str
+
+
+class DiagnosticsBackendInfo(BaseModel):
+    status: str
+    base_url_hint: str
+    python_target: str
+
+
+class DiagnosticsLocalGptInfo(BaseModel):
+    base_url: str
+    model: str
+    timeout_seconds: float
+    api_key_configured: bool
+    api_key_visible: bool
+    health: str
+    detail: str = ""
+    fallback: str
+
+
+class DiagnosticsPathItem(BaseModel):
+    path: str
+    purpose: str
+
+
+class DiagnosticsPathsInfo(BaseModel):
+    data: DiagnosticsPathItem
+    exports: DiagnosticsPathItem
+    prototypes: DiagnosticsPathItem
+    repo_experiments: DiagnosticsPathItem
+    logs: DiagnosticsPathItem
+    backup_database: DiagnosticsPathItem
+
+
+class DiagnosticsRepoProbeInfo(BaseModel):
+    default_mode: str
+    local_execute_windows: str
+    safety_note: str
+
+
+class DiagnosticsCodexInfo(BaseModel):
+    mode: str
+    automation: str
+    notes: str
+
+
+class DiagnosticsSchedulerInfo(BaseModel):
+    status: str
+    mode: str
+    note: str
+
+
+class DiagnosticsBackupInfo(BaseModel):
+    sqlite_db: str
+    recommended_items: list[str] = Field(default_factory=list)
+    note: str
+
+
+class DiagnosticsResponse(BaseModel):
+    app: DiagnosticsAppInfo
+    backend: DiagnosticsBackendInfo
+    local_gpt: DiagnosticsLocalGptInfo
+    paths: DiagnosticsPathsInfo
+    repo_probe: DiagnosticsRepoProbeInfo
+    codex_opencode: DiagnosticsCodexInfo
+    scheduler: DiagnosticsSchedulerInfo
+    backup: DiagnosticsBackupInfo
+    environment_variables: list[str] = Field(default_factory=list)
+
+
+class ScheduledJobUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_minutes: int | None = Field(default=None, ge=5, le=10080)
+    time_of_day: str | None = None
+    day_of_week: int | None = Field(default=None, ge=0, le=6)
+
+
+class ScheduledJob(BaseModel):
+    id: str
+    job_key: str
+    name: str
+    description: str = ""
+    enabled: bool = False
+    schedule_type: Literal["daily", "weekly", "interval"] = "daily"
+    interval_minutes: int | None = None
+    time_of_day: str = ""
+    day_of_week: int | None = None
+    config_json: dict[str, Any] = Field(default_factory=dict)
+    last_run_at: str = ""
+    next_run_at: str = ""
+    last_status: str = "idle"
+    last_message: str = ""
+    created_at: str
+    updated_at: str
+
+
+class ScheduledJobRun(BaseModel):
+    id: str
+    job_id: str
+    job_key: str
+    status: str
+    started_at: str
+    finished_at: str = ""
+    duration_seconds: float = 0
+    summary: str = ""
+    warning: str = ""
+    error: str = ""
+    result_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class SchedulerStatusResponse(BaseModel):
+    status: str
+    running: bool
+    backend_note: str
+    timezone: str
+    tick_seconds: int
+    current_job_key: str = ""
+    last_tick_at: str = ""
+
+
+class SchedulerJobsResponse(BaseModel):
+    jobs: list[ScheduledJob] = Field(default_factory=list)
+
+
+class SchedulerRunsResponse(BaseModel):
+    runs: list[ScheduledJobRun] = Field(default_factory=list)

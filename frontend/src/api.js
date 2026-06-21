@@ -18,8 +18,16 @@ async function request(path, options = {}) {
 }
 
 export const api = {
+  getSettingsDiagnostics: () => request('/settings/diagnostics'),
+  getLlmSettings: () => request('/llm/settings'),
+  getLlmHealth: () => request('/llm/health'),
   listCollectors: () => request('/collectors'),
   collectSignals: (payload) => request('/signals/collect', { method: 'POST', body: JSON.stringify(payload) }),
+  getSchedulerStatus: () => request('/scheduler/status'),
+  listSchedulerJobs: () => request('/scheduler/jobs'),
+  updateSchedulerJob: (id, payload) => request(`/scheduler/jobs/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  runSchedulerJob: (id) => request(`/scheduler/jobs/${id}/run`, { method: 'POST' }),
+  listSchedulerRuns: (limit = 30) => request(`/scheduler/runs?limit=${encodeURIComponent(limit)}`),
   listSignals: () => request('/signals'),
   createSignal: (payload) => request('/signals', { method: 'POST', body: JSON.stringify(payload) }),
   listIdeas: (status = '') => request(status ? `/ideas?status=${encodeURIComponent(status)}` : '/ideas'),

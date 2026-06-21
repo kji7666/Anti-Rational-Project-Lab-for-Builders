@@ -1,0 +1,8 @@
+model = "chatgpt-web-local"
+model_provider = "weirdlab_local_gpt"
+
+[model_providers.weirdlab_local_gpt]
+name = "Weird Lab Local GPT API"
+base_url = "http://127.0.0.1:8788/v1"
+env_key = "WEIRDLAB_LOCAL_GPT_API_KEY"
+wire_api = "chat"

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,6 +32,11 @@ def repo_slug(repo_url: str) -> str:
     if path.endswith(".git"):
         path = path[:-4]
     return slugify(path.replace("/", "-"))
+
+
+def is_valid_repo_url(repo_url: str) -> bool:
+    parsed = urlparse(repo_url.strip())
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def run_command(command: list[str], cwd: Path | None = None, timeout_seconds: int = 120) -> dict[str, Any]:
@@ -97,6 +102,16 @@ def read_json(path: Path) -> dict[str, Any]:
         return {}
 
 
+def unique(items: list[str]) -> list[str]:
+    seen = set()
+    out: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
 def inspect_repo(repo_dir: Path) -> RepoInspection:
     detected_stack: list[str] = []
     evidence: list[str] = []
@@ -114,18 +129,21 @@ def inspect_repo(repo_dir: Path) -> RepoInspection:
         evidence.append("找到 Dockerfile")
         setup_commands.append("docker build -t repo-probe-image .")
         start_commands.append("docker run --rm -p 3000:3000 repo-probe-image")
+
     if exists("docker-compose.yml") or exists("docker-compose.yaml") or exists("compose.yml") or exists("compose.yaml"):
         detected_stack.append("docker-compose")
         evidence.append("找到 docker compose 設定")
         setup_commands.append("docker compose build")
         start_commands.append("docker compose up")
+
     if exists(".devcontainer/devcontainer.json"):
         detected_stack.append("devcontainer")
         evidence.append("找到 .devcontainer/devcontainer.json")
         setup_commands.append("devcontainer up --workspace-folder .")
+
     if exists(".github/workflows"):
         detected_stack.append("github-actions")
-        evidence.append("找到 .github/workflows，可考慮用 act 重跑 CI")
+        evidence.append("找到 GitHub Actions workflow")
         test_commands.append("act")
 
     package_json = repo_dir / "package.json"
@@ -152,11 +170,11 @@ def inspect_repo(repo_dir: Path) -> RepoInspection:
         elif "start" in scripts:
             start_commands.append(f"{pm} start")
         if "postinstall" in scripts:
-            risks.append("package.json 有 postinstall；執行 install 時會跑任意腳本，必須在容器/沙盒內執行。")
+            risks.append("偵測到 postinstall，安裝依賴時可能會執行額外腳本。")
 
     if exists("pyproject.toml") or exists("requirements.txt") or exists("setup.py"):
         detected_stack.append("python")
-        evidence.append("找到 Python 專案線索")
+        evidence.append("找到 Python 專案設定")
         if exists("requirements.txt"):
             setup_commands.append("python -m venv .venv && .venv/bin/pip install -r requirements.txt")
         elif exists("pyproject.toml"):
@@ -170,12 +188,14 @@ def inspect_repo(repo_dir: Path) -> RepoInspection:
         setup_commands.append("cargo fetch")
         build_commands.append("cargo build")
         test_commands.append("cargo test")
+
     if exists("go.mod"):
         detected_stack.append("go")
         evidence.append("找到 go.mod")
         setup_commands.append("go mod download")
         build_commands.append("go build ./...")
         test_commands.append("go test ./...")
+
     if exists("Makefile"):
         detected_stack.append("make")
         evidence.append("找到 Makefile")
@@ -185,27 +205,18 @@ def inspect_repo(repo_dir: Path) -> RepoInspection:
 
     readme_candidates = list(repo_dir.glob("README*"))
     if readme_candidates:
-        evidence.append(f"找到 README：{readme_candidates[0].name}")
+        evidence.append(f"找到 {readme_candidates[0].name}")
+
     if exists(".env.example"):
         evidence.append("找到 .env.example")
-        risks.append("可能需要 .env 設定；第一版可先只驗證 build/test 或 mock mode。")
+        risks.append("專案可能需要環境變數，build/test 可能需要 mock 或手動設定。")
     elif any((repo_dir / name).exists() for name in [".env", ".env.local"]):
-        risks.append("repo 內出現 .env 類檔案；不要把 host secrets 帶入沙盒。")
+        risks.append("專案目錄含有 .env 檔名跡象，執行前必須避免誤用主機 secrets。")
 
     if not detected_stack:
         detected_stack.append("unknown")
-        evidence.append("沒有找到常見 stack 設定，建議改用 README + agent 推理。")
-        risks.append("無法可靠推斷 setup/build/test 指令。")
-
-    # Deduplicate while preserving order.
-    def unique(items: list[str]) -> list[str]:
-        seen = set()
-        out = []
-        for item in items:
-            if item and item not in seen:
-                seen.add(item)
-                out.append(item)
-        return out
+        evidence.append("尚未從常見設定檔辨識出明確技術堆疊。")
+        risks.append("setup/build/test 指令需要人工確認。")
 
     return RepoInspection(
         detected_stack=unique(detected_stack),
@@ -230,7 +241,7 @@ def make_report(
 ) -> str:
     def command_block(items: list[str]) -> str:
         if not items:
-            return "- 尚未推斷"
+            return "- 無"
         return "\n".join(f"- `{item}`" for item in items)
 
     result_lines = []
@@ -247,10 +258,10 @@ def make_report(
 
 ## 結果
 
-- 狀態：`{status}`
-- Repo：{repo_url}
-- Run mode：`{run_mode}`
-- Workspace：`{workspace_dir}`
+- 狀態: `{status}`
+- Repo: `{repo_url}`
+- Run mode: `{run_mode}`
+- Workspace: `{workspace_dir}`
 
 {summary}
 
@@ -260,32 +271,49 @@ def make_report(
 
 ## 證據
 
-{chr(10).join(f'- {item}' for item in inspection.evidence) if inspection.evidence else '- 尚無'}
+{chr(10).join(f'- {item}' for item in inspection.evidence) if inspection.evidence else '- 無'}
 
-## 推斷 setup 指令
+## 建議 setup 指令
 
 {command_block(inspection.setup_commands)}
 
-## 推斷 build 指令
+## 建議 build 指令
 
 {command_block(inspection.build_commands)}
 
-## 推斷 test 指令
+## 建議 test 指令
 
 {command_block(inspection.test_commands)}
 
-## 推斷啟動指令
+## 建議啟動指令
 
 {command_block(inspection.start_commands)}
 
 ## 風險
 
-{chr(10).join(f'- {item}' for item in inspection.risks) if inspection.risks else '- 尚無明顯風險'}
+{chr(10).join(f'- {item}' for item in inspection.risks) if inspection.risks else '- 無明顯風險'}
 
 ## 執行紀錄
 
-{chr(10).join(result_lines) if result_lines else '- dry_run / inspect_only 模式，未執行 install/build/test。'}
+{chr(10).join(result_lines) if result_lines else '- inspect_only / local_dry_run 未執行 install/build/test'}
 """
+
+
+def blocked_result(summary: str, risks: list[str]) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "summary": summary,
+        "detected_stack": [],
+        "evidence": [],
+        "setup_commands": [],
+        "build_commands": [],
+        "test_commands": [],
+        "start_commands": [],
+        "risks": risks,
+        "report_path": "",
+        "workspace_dir": "",
+        "logs": [],
+    }
 
 
 def probe_repo(
@@ -295,53 +323,71 @@ def probe_repo(
     run_mode: str = "inspect_only",
     timeout_seconds: int = 180,
 ) -> dict[str, Any]:
-    """Clone/inspect a repo and optionally execute a very small set of commands.
+    """Clone/inspect a repo and optionally execute a very small set of commands."""
+    if not is_valid_repo_url(repo_url):
+        return blocked_result(
+            summary="Repo probe blocked: repo_url must be a valid http/https repository URL.",
+            risks=["Invalid repository URL was provided."],
+        )
 
-    run_mode:
-      - inspect_only: clone + inspect files only. Safe default.
-      - local_dry_run: same as inspect_only, but report commands as planned local run.
-      - local_execute: execute inferred setup/build/test on host workspace. Use only in disposable VM.
-    """
     base_dir = REPO_EXPERIMENTS_DIR / f"{repo_slug(repo_url)}-{experiment_id}"
     repo_dir = base_dir / "repo"
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    clone_result: dict[str, Any] | None = None
     if not repo_dir.exists():
         clone_result = run_command(["git", "clone", "--depth", "1", repo_url, str(repo_dir)], timeout_seconds=timeout_seconds)
     else:
-        clone_result = {"command": ["reuse", str(repo_dir)], "exit_code": 0, "stdout": "Reusing existing repo directory.", "stderr": "", "timed_out": False}
+        clone_result = {
+            "command": ["reuse", str(repo_dir)],
+            "cwd": "",
+            "started_at": now_iso(),
+            "finished_at": now_iso(),
+            "exit_code": 0,
+            "stdout": "Reusing existing repo directory.",
+            "stderr": "",
+            "timed_out": False,
+        }
 
     command_results: list[dict[str, Any]] = [clone_result]
     if clone_result.get("exit_code") != 0:
-        inspection = RepoInspection(["unknown"], ["git clone 失敗"], [], [], [], [], ["repo 無法 clone，可能是 URL 錯誤、私有 repo、網路失敗。"])
+        inspection = RepoInspection(
+            detected_stack=["unknown"],
+            evidence=["git clone 失敗"],
+            setup_commands=[],
+            build_commands=[],
+            test_commands=[],
+            start_commands=[],
+            risks=["無法 clone repository，請確認 repo URL、網路連線或 repository 存取權限。"],
+        )
         status = "failed"
-        summary = "clone 失敗，尚無法進一步判斷 setup/build/test。"
+        summary = "clone 失敗，因此沒有繼續推測 setup/build/test。"
     else:
         inspection = inspect_repo(repo_dir)
         status = "inspected"
-        summary = "已 clone 並完成靜態偵測。"
+        summary = "已完成 clone 與檔案檢查，尚未執行 setup/build/test。"
 
         if run_mode == "local_execute":
-            # This is intentionally conservative. Execute setup/build/test only; do not start servers.
-            executable_commands = inspection.setup_commands[:1] + inspection.build_commands[:1] + inspection.test_commands[:1]
-            status = "running"
-            for command_text in executable_commands:
-                # Windows support: use shell command string through cmd/powershell would be platform-specific.
-                # In the generated product, user runs this backend on Windows; use shell=True would be risky.
-                # Use bash when available, otherwise command will fail clearly and safely.
-                result = run_command(["bash", "-lc", command_text], cwd=repo_dir, timeout_seconds=timeout_seconds)
-                command_results.append(result)
-                if result.get("exit_code") != 0:
-                    status = "failed"
-                    summary = f"指令失敗：{command_text}"
-                    break
+            if os.name == "nt":
+                inspection.risks.append("Windows VM 預設不會自動執行 local_execute，避免把推測出的 POSIX 指令直接拿到主機跑。")
+                inspection.risks.append("若要實際執行，請先在 disposable VM 或明確準備好的環境中人工確認命令。")
+                status = "blocked"
+                summary = "local_execute 在 Windows 上已被保守阻擋；本次仍保留 inspect 報告與命令計畫。"
             else:
-                status = "passed"
-                summary = "setup/build/test 的第一條推斷路徑已執行完成。"
+                executable_commands = inspection.setup_commands[:1] + inspection.build_commands[:1] + inspection.test_commands[:1]
+                status = "running"
+                for command_text in executable_commands:
+                    result = run_command(["bash", "-lc", command_text], cwd=repo_dir, timeout_seconds=timeout_seconds)
+                    command_results.append(result)
+                    if result.get("exit_code") != 0:
+                        status = "failed"
+                        summary = f"命令執行失敗：{command_text}"
+                        break
+                else:
+                    status = "passed"
+                    summary = "setup/build/test 已完成一次保守執行。"
         elif run_mode == "local_dry_run":
             status = "planned"
-            summary = "已完成偵測，並列出本機 dry-run 指令；尚未執行。"
+            summary = "已完成 clone 與檢查，並產生本機 dry-run 的命令計畫。"
 
     report = make_report(
         title=title,
