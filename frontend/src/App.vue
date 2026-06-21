@@ -501,7 +501,7 @@ async function loadLlmHealth() {
       detail: err.message,
       base_url: 'http://127.0.0.1:8788/v1',
       model: 'chatgpt-web-local',
-      timeout_seconds: 90,
+      timeout_seconds: 300,
       api_key_configured: false,
     }
   }

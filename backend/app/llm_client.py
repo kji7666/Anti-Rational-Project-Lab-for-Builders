@@ -10,7 +10,7 @@ from typing import Any
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8788/v1"
 DEFAULT_MODEL = "chatgpt-web-local"
-DEFAULT_TIMEOUT_SECONDS = 90.0
+DEFAULT_TIMEOUT_SECONDS = 300.0
 DEFAULT_API_KEY = "local-dev"
 
 
